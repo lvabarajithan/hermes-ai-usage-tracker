@@ -16,6 +16,7 @@ own. Secrets are resolved in-process and never serialized: the wire carries
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -104,13 +105,21 @@ def _run_in_home(home: Optional[Path], fn: Callable[[], Any]) -> Any:
         return fn()
     try:
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
     except Exception:  # noqa: BLE001
         return fn()
-    token = set_hermes_home_override(home)
+    # ThreadPoolExecutor workers do not inherit the request's ContextVars. Hydrate and bind the
+    # target profile's secret scope here so env-backed pool entries (including Bitwarden-backed
+    # OPENROUTER_API_KEY references) are usable by runtime_provider in the probe.
+    hydrate_profile_secret_sources(home)
+    home_token = set_hermes_home_override(home)
+    secret_token = set_secret_scope(build_profile_secret_scope(home))
     try:
         return fn()
     finally:
-        reset_hermes_home_override(token)
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
 
 
 def _server_home() -> Path:
@@ -271,9 +280,30 @@ def _runtime_key(provider: str) -> Optional[str]:
 
         runtime = resolve_runtime_provider(requested=provider) or {}
         key = str(runtime.get("api_key") or "").strip()
-        return key or None
+        if key:
+            return key
     except Exception:  # noqa: BLE001 - missing creds are a normal state, not an error
         log.debug("runtime key resolution failed for %s", provider, exc_info=True)
+    # OpenCode CLI keeps its API credential in its own auth store. Hermes may only
+    # have a non-secret credential-pool pointer (for example ``env:...`` backed by
+    # Bitwarden), which is visible to discovery but unusable by the dashboard probe.
+    # Read the vendor store as a read-only fallback; never log or serialize the key.
+    if provider in ("opencode-go", "opencode-zen"):
+        return _opencode_local_auth_key(provider)
+    return None
+
+
+def _opencode_local_auth_key(provider: str, auth_path: Optional[Path] = None) -> Optional[str]:
+    """Return the key for *provider* from OpenCode's local auth store, if present."""
+    path = auth_path or (Path.home() / ".local" / "share" / "opencode" / "auth.json")
+    account = "opencode-go" if provider == "opencode-go" else "opencode"
+    try:
+        with path.open(encoding="utf-8") as handle:
+            payload = json.load(handle)
+        entry = payload.get(account) if isinstance(payload, dict) else None
+        key = entry.get("key") if isinstance(entry, dict) else None
+        return str(key).strip() or None if key else None
+    except (OSError, ValueError, TypeError, AttributeError):
         return None
 
 
@@ -403,10 +433,12 @@ def _probe_copilot() -> dict[str, Any]:
 def _probe_opencode_go() -> dict[str, Any]:
     key = _runtime_key("opencode-go")
     if not key:
-        return _unavailable("No OpenCode Go API key (OPENCODE_GO_API_KEY) in this profile.", source="zen_go_usage")
+        return _unavailable("No OpenCode Go credential in Hermes or OpenCode's local auth store.",
+                            source="zen_go_usage")
     try:
         payload = _get_json("https://opencode.ai/zen/go/v1/usage",
-                            {"Authorization": f"Bearer {key}", "Accept": "application/json"})
+                            {"Authorization": f"Bearer {key}", "Accept": "application/json",
+                             "User-Agent": "HermesAIUsageTracker/1.0"})
     except _ProbeAuthError as exc:  # noqa: BLE001
         return _unavailable(f"OpenCode Go rejected the API key ({exc}).", source="zen_go_usage")
     except _ProbeUnsupported as exc:  # noqa: BLE001
@@ -433,10 +465,12 @@ def _probe_opencode_go() -> dict[str, Any]:
 def _probe_opencode_zen() -> dict[str, Any]:
     key = _runtime_key("opencode-zen")
     if not key:
-        return _unavailable("No OpenCode Zen API key (OPENCODE_ZEN_API_KEY) in this profile.", source="zen_credits")
+        return _unavailable("No OpenCode Zen credential in Hermes or OpenCode's local auth store.",
+                            source="zen_credits")
     for url in ("https://api.opencode.ai/v1/credits", "https://opencode.ai/zen/v1/credits"):
         try:
-            payload = _get_json(url, {"Authorization": f"Bearer {key}", "Accept": "application/json"})
+            payload = _get_json(url, {"Authorization": f"Bearer {key}", "Accept": "application/json",
+                                      "User-Agent": "HermesAIUsageTracker/1.0"})
         except _ProbeUnsupported:
             continue
         except _ProbeAuthError as exc:  # noqa: BLE001

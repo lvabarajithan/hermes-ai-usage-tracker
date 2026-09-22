@@ -69,6 +69,9 @@ Honest limits:
   to a plugin's own backend.
 - Credential lookup uses the profile's own home first and falls back to the server
   process environment (exactly how Hermes itself resolves them for that profile).
+- OpenCode Go/Zen also fall back read-only to OpenCode CLI's local store at
+  `~/.local/share/opencode/auth.json`. The key is used only for the live quota request and is
+  never returned by the plugin API.
 
 ## Hiding providers
 
