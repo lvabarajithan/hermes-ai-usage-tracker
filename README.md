@@ -1,8 +1,8 @@
-# AI Usage Tracker — Hermes desktop plugin
+# AI Usage Tracker — Hermes desktop + web dashboard plugin
 
-Live **subscription quota** for every AI provider Hermes can route to, inside the Hermes
-desktop: a page (sidebar → *AI usage*), a status-bar chip showing the worst remaining
-window, and a per-profile picker.
+Live **subscription quota** for every AI provider Hermes can route to, inside Hermes:
+a desktop page (sidebar → *AI usage*) with a status-bar chip showing the worst remaining
+window, and a web dashboard tab (`/ai-usage`) with the same per-profile picker.
 
 Scope is deliberately narrow: **quota windows only** — provider, plan, window name,
 % remaining, reset countdown. No token counting, no cost estimates, no period filters.
@@ -74,8 +74,9 @@ Honest limits:
 
 Each card has a **✕** control. Hidden providers leave the page and are excluded from the
 status-bar chip. The header's **`Hidden N`** toggle reveals them dimmed, with **Unhide all**
-to reset. The list persists through `ctx.storage`
-(`hermes.plugin.ai-usage-tracker.hidden-providers-v1`).
+to reset. The list persists through `ctx.storage` on desktop
+(`hermes.plugin.ai-usage-tracker.hidden-providers-v1`) and through `localStorage` on the
+web dashboard (`ai-usage-tracker:hidden-v1`).
 
 ## Layout (one package, both SDKs)
 
@@ -84,8 +85,11 @@ ai-usage-tracker/
 ├── plugin.yaml              # agent half (no tools/hooks — declares nothing by design)
 ├── __init__.py              # register(ctx) no-op; exists so plugins.enabled can gate it
 ├── dashboard/
-│   ├── manifest.json        # { "name": "ai-usage-tracker", "api": "plugin_api.py" }
-│   └── plugin_api.py        # FastAPI router → /api/plugins/ai-usage-tracker/{usage,profiles,health}
+│   ├── manifest.json        # web manifest: tab /ai-usage, entry dist/index.js, css, api
+│   ├── plugin_api.py        # FastAPI router → /api/plugins/ai-usage-tracker/{usage,profiles,health}
+│   └── dist/
+│       ├── index.js         # web dashboard page (plain-JS IIFE on __HERMES_PLUGIN_SDK__)
+│       └── style.css        # web styles on the dashboard's --color-* theme vars
 └── desktop/
     └── plugin.js            # desktop half; Electron copies it to desktop-plugins/<id>/
 ```

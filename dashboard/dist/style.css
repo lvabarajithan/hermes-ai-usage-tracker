@@ -1,0 +1,186 @@
+/* AI Usage Tracker — web dashboard styles. Uses the dashboard theme variables
+   (--color-*) so the page follows the active Hermes skin. */
+
+.aut-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  max-width: 960px;
+}
+
+.aut-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.aut-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.aut-spacer {
+  flex: 1;
+}
+
+.aut-quota-dim {
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+}
+
+.aut-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aut-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 12px;
+  background: var(--color-card);
+}
+
+.aut-card-hidden {
+  opacity: 0.6;
+}
+
+.aut-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aut-card-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.aut-hide-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+
+.aut-hide-btn:hover {
+  color: var(--color-foreground);
+}
+
+.aut-quota {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aut-quota-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.aut-quota-label {
+  width: 112px;
+  flex-shrink: 0;
+  color: var(--color-muted-foreground);
+}
+
+.aut-quota-pct {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.aut-text-normal {
+  color: var(--color-text-secondary, var(--color-muted-foreground));
+}
+
+.aut-text-strong {
+  color: var(--color-foreground);
+}
+
+.aut-bar {
+  height: 6px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--color-border);
+}
+
+.aut-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.aut-bar-good {
+  background: var(--color-success, var(--color-primary));
+}
+
+.aut-bar-warn {
+  background: var(--color-warning, var(--color-primary));
+}
+
+.aut-bar-bad {
+  background: var(--color-destructive, var(--color-primary));
+}
+
+.aut-bar-muted {
+  background: var(--color-muted-foreground);
+}
+
+.aut-select {
+  min-width: 180px;
+}
+
+.aut-error,
+.aut-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 24px;
+  align-items: flex-start;
+}
+
+.aut-empty {
+  align-items: center;
+  text-align: center;
+}
+
+.aut-error-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.aut-skeleton {
+  border-radius: 6px;
+  background: var(--color-border);
+  opacity: 0.5;
+  animation: aut-pulse 1.4s ease-in-out infinite;
+}
+
+.aut-skel-line {
+  height: 20px;
+  width: 220px;
+}
+
+.aut-skel-card {
+  height: 96px;
+  width: 100%;
+}
+
+@keyframes aut-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.25; }
+}
