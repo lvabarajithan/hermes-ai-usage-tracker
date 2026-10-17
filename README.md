@@ -20,6 +20,7 @@ Scope is deliberately narrow: **quota windows only** — provider, plan, window 
 | `kimi-coding` | `api.kimi.com/coding/v1/usages` |
 | `minimax` | `api.minimax.io/v1/api/openplatform/coding_plan/remains` |
 | `deepseek` | `api.deepseek.com/user/balance` |
+| `elevenlabs` | `api.elevenlabs.io/v1/user/subscription` (monthly credits; restricted keys need **User → Read**) |
 
 Providers with no quota API are listed with an explicit reason instead of a fabricated
 bar. Absence-path providers (Grok/SuperGrok, Gemini Code Assist OAuth, Cursor, Kiro) need
