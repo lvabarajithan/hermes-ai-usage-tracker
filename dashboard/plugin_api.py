@@ -60,10 +60,17 @@ _FALLBACK_LABELS = {
     "custom": "Custom endpoint",
 }
 
+# Non-LLM services Hermes uses (voice) that are not in its model-provider catalog,
+# so they need their own label and their own configured check.
+_EXTRA_LABELS = {
+    "elevenlabs": "ElevenLabs",
+}
+
 # Providers whose subscription quota can be read live.
 _QUOTA_CAPABLE = frozenset({
     "anthropic", "openai-codex", "openrouter", "nous", "copilot",
     "opencode-go", "opencode-zen", "zai", "kimi-coding", "minimax", "deepseek",
+    "elevenlabs",
 })
 
 _ENV_HINTS = {
@@ -601,6 +608,95 @@ def _probe_deepseek() -> dict[str, Any]:
             "fetched_at": datetime.now(timezone.utc).isoformat()}
 
 
+def _elevenlabs_key() -> Optional[str]:
+    """ElevenLabs key for the bound profile — never logged or serialized.
+
+    Order: the profile's own ``.env``, then Hermes' shared voice-key resolver
+    (secret scope / process env / ``.env`` / credential pool), then the server
+    process environment.
+    """
+    try:
+        from agent.secret_scope import load_env_file
+
+        key = str(load_env_file(_hermes_home() / ".env").get("ELEVENLABS_API_KEY") or "").strip()
+        if key:
+            return key
+    except Exception:  # noqa: BLE001
+        log.debug("profile .env read failed for ElevenLabs", exc_info=True)
+    try:
+        from tools.tool_backend_helpers import resolve_provider_secret
+
+        key = str(resolve_provider_secret("ELEVENLABS_API_KEY", "elevenlabs") or "").strip()
+        if key:
+            return key
+    except Exception:  # noqa: BLE001
+        log.debug("voice-key resolver unavailable for ElevenLabs", exc_info=True)
+    return os.environ.get("ELEVENLABS_API_KEY", "").strip() or None
+
+
+def _elevenlabs_auth_reason(response: httpx.Response) -> str:
+    """Tell a restricted key (common — ElevenLabs encourages scoped keys) apart from a bad one."""
+    try:
+        detail = (response.json() or {}).get("detail")
+    except Exception:  # noqa: BLE001
+        detail = None
+    if isinstance(detail, dict) and detail.get("status") == "missing_permissions":
+        return ("This ElevenLabs API key is restricted and lacks the user_read permission — enable "
+                "User → Read on the key (ElevenLabs → Developers → API keys) to show credits.")
+    return f"ElevenLabs rejected the API key (HTTP {response.status_code}) — check ELEVENLABS_API_KEY."
+
+
+def _probe_elevenlabs() -> dict[str, Any]:
+    key = _elevenlabs_key()
+    if not key:
+        return _unavailable("No ElevenLabs API key (ELEVENLABS_API_KEY) in this profile.",
+                            source="elevenlabs_subscription")
+    try:
+        with httpx.Client(timeout=_PROBE_TIMEOUT) as client:
+            response = client.get("https://api.elevenlabs.io/v1/user/subscription",
+                                  headers={"xi-api-key": key, "Accept": "application/json"})
+            if response.status_code in (401, 403):
+                return _unavailable(_elevenlabs_auth_reason(response), source="elevenlabs_subscription")
+            if response.status_code >= 400:
+                return _unavailable(f"ElevenLabs subscription endpoint returned HTTP {response.status_code}.",
+                                    source="elevenlabs_subscription")
+            payload = response.json()
+    except Exception as exc:  # noqa: BLE001
+        return _unavailable(f"ElevenLabs subscription probe failed: {type(exc).__name__}: {exc}",
+                            source="elevenlabs_subscription")
+    if not isinstance(payload, dict):
+        return _unavailable("ElevenLabs returned an unexpected subscription payload.", source="elevenlabs_subscription")
+
+    used, limit = payload.get("character_count"), payload.get("character_limit")
+    reset_unix = payload.get("next_character_count_reset_unix")
+    reset_at = (datetime.fromtimestamp(reset_unix, tz=timezone.utc)
+                if isinstance(reset_unix, (int, float)) and reset_unix > 0 else None)
+    period = {"monthly_period": "monthly", "3_month_period": "3-month",
+              "6_month_period": "6-month", "annual_period": "annual"}.get(payload.get("character_refresh_period"))
+    windows: list[dict[str, Any]] = []
+    details: list[str] = []
+    if isinstance(used, (int, float)) and isinstance(limit, (int, float)) and limit > 0:
+        left = max(0, limit - used)
+        windows.append(_window(f"Credits ({period})" if period else "Credits", used / limit * 100.0, reset_at,
+                               f"{left:,.0f} of {limit:,.0f} left"))
+        if used > limit:
+            details.append(f"Over the included credits by {used - limit:,.0f}")
+    voices_used, voice_limit = payload.get("voice_slots_used"), payload.get("voice_limit")
+    if isinstance(voices_used, int) and isinstance(voice_limit, int) and voice_limit > 0:
+        details.append(f"Voice slots: {voices_used} of {voice_limit} used")
+    status = payload.get("status")
+    if isinstance(status, str) and status not in ("active", "free", "trialing"):
+        details.append(f"Subscription status: {status.replace('_', ' ')}")
+    if not windows:
+        return _unavailable("ElevenLabs returned no character quota for this account.",
+                            source="elevenlabs_subscription")
+    tier = payload.get("tier")
+    plan = tier.replace("_", " ").title() if isinstance(tier, str) and tier else None
+    return {"available": True, "source": "elevenlabs_subscription", "title": "ElevenLabs credits", "plan": plan,
+            "windows": windows, "details": details, "unavailable_reason": None,
+            "fetched_at": datetime.now(timezone.utc).isoformat()}
+
+
 _PROBES: dict[str, Callable[[], dict[str, Any]]] = {
     "anthropic": lambda: _probe_standard("anthropic"),
     "openai-codex": lambda: _probe_standard("openai-codex"),
@@ -613,6 +709,7 @@ _PROBES: dict[str, Callable[[], dict[str, Any]]] = {
     "kimi-coding": _probe_kimi,
     "minimax": _probe_minimax,
     "deepseek": _probe_deepseek,
+    "elevenlabs": _probe_elevenlabs,
 }
 
 
@@ -644,6 +741,8 @@ def _configured_providers() -> set[str]:
         env_hint = _ENV_HINTS.get(provider)
         if env_hint and os.environ.get(env_hint):
             configured.add(provider)
+    if _elevenlabs_key():
+        configured.add("elevenlabs")
     return configured
 
 
@@ -654,7 +753,7 @@ def _configured_providers() -> set[str]:
 
 def _build_payload(home: Optional[Path], profile_name: Optional[str]) -> dict[str, Any]:
     started = time.time()
-    labels = _provider_labels()
+    labels = {**_provider_labels(), **_EXTRA_LABELS}
     active, last_seen = _run_in_home(home, _active_providers)
     configured = _run_in_home(home, _configured_providers)
 
