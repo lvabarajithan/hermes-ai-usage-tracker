@@ -105,31 +105,68 @@ function selectProfile(name) {
 
 // ---------------------------------------------------------------- formatters
 
-function fmtIst(iso) {
-  if (!iso) return null
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString('en-IN', {
-    timeZone: 'Asia/Kolkata',
+// Timestamps render in the profile's Hermes timezone (the backend's `timezone`
+// field), never a hardcoded one. An empty/missing zone means "this machine's own
+// zone", which is what a browser left to its defaults already gives us.
+const _stampFormats = new Map()
+
+function stampFormat(tz) {
+  const key = typeof tz === 'string' ? tz.trim() : ''
+  const cached = _stampFormats.get(key)
+  if (cached) return cached
+  const options = {
     day: '2-digit',
     month: 'short',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: true
-  })
+    hour12: true,
+    timeZoneName: 'short'
+  }
+  let formatter
+  try {
+    formatter = new Intl.DateTimeFormat(undefined, key ? { ...options, timeZone: key } : options)
+  } catch {
+    // A stale or unsupported IANA name must not sink the page — use the local zone.
+    formatter = new Intl.DateTimeFormat(undefined, options)
+  }
+  _stampFormats.set(key, formatter)
+  return formatter
 }
 
-function resetLabel(iso) {
+/** `08 Nov, 02:49 pm AEDT` — the locale's own date/time order plus the zone
+ *  abbreviation, so the label never claims a zone it isn't showing. */
+function fmtWhen(iso, tz) {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const parts = stampFormat(tz).formatToParts(d)
+  const zone = parts.find(part => part.type === 'timeZoneName')?.value || ''
+  const stamp = parts
+    .filter(part => part.type !== 'timeZoneName')
+    .map(part => part.value)
+    .join('')
+    .trim()
+    .replace(/[,\s]+$/, '')
+  return zone ? `${stamp} ${zone}` : stamp
+}
+
+/** `1d 0h` / `4h 5m` / `6m` / `now` — the countdown half of a reset label. */
+function resetIn(iso) {
   if (!iso) return null
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return null
   const seconds = Math.round((d.getTime() - Date.now()) / 1000)
-  if (seconds <= 0) return 'resets now'
+  if (seconds <= 0) return 'now'
   const days = Math.floor(seconds / 86_400)
   const hours = Math.floor((seconds % 86_400) / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
-  const rel = days ? `in ${days}d ${hours}h` : hours ? `in ${hours}h ${minutes}m` : `in ${minutes}m`
-  return `resets ${rel} · ${fmtIst(iso)} IST`
+  return days ? `${days}d ${hours}h` : hours ? `${hours}h ${minutes}m` : `${minutes}m`
+}
+
+function resetLabel(iso, tz) {
+  const rel = resetIn(iso)
+  if (!rel) return null
+  return `resets ${rel === 'now' ? 'now' : `in ${rel}`} · ${fmtWhen(iso, tz)}`
 }
 
 function pct(value) {
@@ -215,7 +252,7 @@ function useUsage(profile, intervalMs) {
 
 // ---------------------------------------------------------------- components
 
-function QuotaBar({ window }) {
+function QuotaBar({ window, tz }) {
   const remaining = window.remaining_percent
   if (remaining === null || remaining === undefined) {
     return jsxs('div', {
@@ -239,8 +276,8 @@ function QuotaBar({ window }) {
             children: `${pct(remaining)} left`
           }),
           window.detail ? jsx('span', { className: 'text-(--ui-text-quaternary)', children: window.detail }) : null,
-          resetLabel(window.reset_at)
-            ? jsx('span', { className: 'text-(--ui-text-quaternary)', children: resetLabel(window.reset_at) })
+          resetLabel(window.reset_at, tz)
+            ? jsx('span', { className: 'text-(--ui-text-quaternary)', children: resetLabel(window.reset_at, tz) })
             : null,
           tone === 'bad' || tone === 'warn'
             ? jsx(Badge, { variant: tone === 'bad' ? 'destructive' : 'warn', size: 'xs', children: tone === 'bad' ? 'low' : 'watch' })
@@ -259,7 +296,7 @@ function QuotaBar({ window }) {
   })
 }
 
-function ProviderCard({ provider, isHidden }) {
+function ProviderCard({ provider, isHidden, tz }) {
   const status = statusOf(provider)
   const windows = provider.quota?.windows || []
   const details = provider.quota?.details || []
@@ -296,7 +333,7 @@ function ProviderCard({ provider, isHidden }) {
           })
         ]
       }),
-      windows.map((window, index) => jsx(QuotaBar, { window }, index)),
+      windows.map((window, index) => jsx(QuotaBar, { window, tz }, index)),
       !provider.quota?.available && provider.quota?.unavailable_reason
         ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-quaternary)', children: provider.quota.unavailable_reason })
         : null,
@@ -413,6 +450,7 @@ function UsagePage() {
 
   const chipProvider = useValue($chipProvider)
   const profiles = data?.profiles || []
+  const tz = data?.timezone || ''
   const shownProfile = selected || data?.profile || ''
   const header = jsx(PageHeader, {
     profiles,
@@ -426,7 +464,7 @@ function UsagePage() {
     hiddenCount: hiddenIds.length,
     showHidden,
     setShowHidden,
-    meta: data ? `fetched ${fmtIst(data.generated_at)} IST · probed in ${data.probe_seconds}s` : null
+    meta: data ? `fetched ${fmtWhen(data.generated_at, tz)} · probed in ${data.probe_seconds}s` : null
   })
 
   // The header (profile picker + refresh) renders in EVERY state.
@@ -491,9 +529,9 @@ function UsagePage() {
         jsxs('div', {
           className: 'flex flex-col gap-2',
           children: [
-            visible.map((provider, index) => jsx(ProviderCard, { provider }, index)),
+            visible.map((provider, index) => jsx(ProviderCard, { provider, tz }, index)),
             showHidden
-              ? hiddenProviders.map((provider, index) => jsx(ProviderCard, { provider, isHidden: true }, `hidden-${index}`))
+              ? hiddenProviders.map((provider, index) => jsx(ProviderCard, { provider, isHidden: true, tz }, `hidden-${index}`))
               : null,
             visible.length === 0
               ? jsx(EmptyState, {
@@ -528,7 +566,7 @@ function UsageChip() {
   const worst = (pinned ? worstWindowOf(pinned) : null) || worstRemaining(data, hiddenIds)
   const tone = toneFor(worst ? worst.remaining : null)
   const detail = worst
-    ? [worst.provider, worst.window ? `${worst.window} window` : null, resetLabel(worst.reset_at)]
+    ? [worst.provider, worst.window ? `${worst.window} window` : null, resetLabel(worst.reset_at, data?.timezone)]
         .filter(Boolean)
         .join(' · ')
     : 'AI usage'
@@ -560,6 +598,172 @@ function UsageChip() {
         jsx('span', { children: worst ? `${pct(worst.remaining)} · ${worst.provider}` : data ? 'AI usage' : 'AI usage…' })
       ]
     })
+  })
+}
+
+/** One dashboard card, scaled down: provider header, then each quota window on
+ *  its own line with the same thin bar the page draws underneath. */
+function GlanceCard({ provider }) {
+  const status = statusOf(provider)
+  const windows = provider.quota?.windows || []
+  const details = provider.quota?.details || []
+
+  return jsxs('button', {
+    type: 'button',
+    title: 'Open the AI usage page',
+    className:
+      'flex w-full flex-col gap-1 rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-1 text-left hover:bg-(--ui-stroke-secondary)',
+    onClick: () => {
+      haptic('tap')
+      host.navigate(ROUTE)
+    },
+    children: [
+      jsxs('span', {
+        className: 'flex min-w-0 items-center gap-1.5',
+        children: [
+          jsx('span', {
+            className: 'min-w-0 truncate text-[0.6875rem] font-medium text-(--ui-text-secondary)',
+            children: provider.label
+          }),
+          provider.quota?.plan
+            ? jsx(Badge, { variant: 'muted', size: 'xs', children: provider.quota.plan })
+            : null,
+          jsx('span', { className: 'flex-1' }),
+          jsx(Badge, { variant: status.variant, size: 'xs', children: status.label })
+        ]
+      }),
+      ...windows.map((window, index) => {
+        const remaining = window.remaining_percent
+        const hasValue = remaining !== null && remaining !== undefined
+        const tone = toneFor(remaining)
+
+        return jsxs(
+          'span',
+          {
+            className: 'flex w-full flex-col',
+            // Inline gap/height: the app's Tailwind build never scans plugin
+            // files, so arbitrary utilities like gap-[2px] / h-[2px] simply
+            // don't exist in its stylesheet (core uses h-0.5, not these).
+            style: { gap: '3px' },
+            children: [
+              // One line per window: name ……………… countdown  97%. The absolute
+              // reset time and zone stay in the page; at rail size the
+              // countdown is what's readable at a glance.
+              jsxs('span', {
+                className: 'flex w-full items-baseline gap-2 text-[0.625rem]',
+                children: [
+                  jsx('span', {
+                    className: 'w-20 shrink-0 truncate text-(--ui-text-tertiary)',
+                    children: window.label
+                  }),
+                  // Plain spacer: label left, countdown + percent right-aligned.
+                  jsx('span', { className: 'min-w-0 flex-1' }),
+                  jsx('span', {
+                    className: 'shrink-0 tabular-nums text-(--ui-text-quaternary)',
+                    children: hasValue ? resetIn(window.reset_at) || '' : window.detail || 'unlimited'
+                  }),
+                  hasValue
+                    ? jsx('span', {
+                        className: cn(
+                          'shrink-0 tabular-nums',
+                          tone === 'bad' || tone === 'warn'
+                            ? 'text-(--ui-text-primary)'
+                            : 'text-(--ui-text-secondary)'
+                        ),
+                        children: pct(remaining)
+                      })
+                    : null
+                ]
+              }),
+              jsx('span', {
+                className: 'block w-full overflow-hidden',
+                style: { height: '2px', borderRadius: '1px', background: 'var(--ui-stroke-secondary)' },
+                children: hasValue
+                  ? jsx('span', {
+                      className: 'block',
+                      style: {
+                        height: '100%',
+                        borderRadius: '1px',
+                        width: `${Math.max(1, Math.min(100, Number(remaining)))}%`,
+                        background: 'var(--ui-accent)'
+                      }
+                    })
+                  : null
+              })
+            ]
+          },
+          index
+        )
+      }),
+      details.length
+        ? jsx('span', {
+            className: 'w-full truncate text-[0.625rem] text-(--ui-text-quaternary)',
+            children: details.join(' · ')
+          })
+        : null,
+      !provider.quota?.available && provider.quota?.unavailable_reason
+        ? jsx('span', {
+            className: 'w-full text-[0.625rem] text-(--ui-text-quaternary)',
+            children: provider.quota.unavailable_reason
+          })
+        : null
+    ]
+  })
+}
+
+/** Compact quota glance, docked under the Files pane (right rail). */
+function QuotaGlance() {
+  const hiddenIds = useValue($hidden)
+  const selected = useValue($profile)
+  const { data, refetch } = useUsage(selected, REFRESH_PAGE_MS)
+  const providers = (data?.providers || [])
+    .filter(provider => !(hiddenIds || []).includes(provider.id))
+    .filter(provider => (provider.quota?.windows || []).length > 0 || provider.quota?.available)
+    .sort((a, b) => (worstWindowOf(a)?.remaining ?? 999) - (worstWindowOf(b)?.remaining ?? 999))
+
+  return jsxs('div', {
+    className: 'flex h-full flex-col gap-1 px-1.5 py-1',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center gap-1.5',
+        children: [
+          jsx('span', { className: 'text-[0.6875rem] font-medium text-(--ui-text-secondary)', children: 'AI usage' }),
+          jsx('span', { className: 'truncate text-[0.625rem] text-(--ui-text-quaternary)', children: selected || '' }),
+          jsx('span', { className: 'flex-1' }),
+          jsx('button', {
+            type: 'button',
+            title: 'Refresh quota',
+            'aria-label': 'Refresh quota',
+            className: 'px-1 text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)',
+            onClick: () => {
+              haptic('tap')
+              refetch()
+            },
+            children: jsx(Codicon, { name: 'refresh' })
+          })
+        ]
+      }),
+      jsx('div', {
+        className: 'min-h-0 flex-1 overflow-y-auto',
+        children: providers.length
+          ? providers.map(provider => jsx(GlanceCard, { provider }, provider.id))
+          : jsx('div', {
+              className: 'px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)',
+              children: data ? 'No live quota for this profile.' : 'Loading…'
+            })
+      }),
+      jsxs('button', {
+        type: 'button',
+        title: 'Open the AI usage page',
+        className:
+          'flex items-center gap-1 text-left text-[0.625rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)',
+        onClick: () => {
+          haptic('tap')
+          host.navigate(ROUTE)
+        },
+        children: [jsx('span', { children: 'Details' }), jsx(Codicon, { name: 'chevron-right' })]
+      })
+    ]
   })
 }
 
@@ -612,6 +816,27 @@ export default {
       area: STATUSBAR_AREAS.right,
       order: 125,
       render: () => jsx(UsageChip, {})
+    })
+
+    // Compact glance docked under the right-rail Files pane. The file tree
+    // itself takes no plugin contributions; a pane can only dock beside it.
+    ctx.register({
+      id: 'files-glance',
+      area: 'panes',
+      title: 'AI usage',
+      data: {
+        placement: 'right',
+        dock: { pane: 'files', pos: 'bottom' },
+        height: '240px',
+        minHeight: '140px',
+        // Same clamp set as the Files pane (10rem..20rem). A fixed split only
+        // keeps its cap when EVERY pane in the column declares one: leaving
+        // maxWidth off makes the right rail the leftover absorber, which is
+        // what ballooned it over the chat and ignored sash sizes.
+        minWidth: '10rem',
+        maxWidth: '20rem'
+      },
+      render: () => jsx(QuotaGlance, {})
     })
   }
 }
