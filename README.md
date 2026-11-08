@@ -7,6 +7,10 @@ window, and a per-profile picker.
 Scope is deliberately narrow: **quota windows only** — provider, plan, window name,
 % remaining, reset countdown. No token counting, no cost estimates, no period filters.
 
+Timestamps use the profile's **Hermes timezone** — `timezone` in that profile's
+`config.yaml`, else `HERMES_TIMEZONE`, else the machine's own zone — and carry the
+abbreviation `Intl` reports for that zone (`AEDT`, `GMT+11`, …), never a fixed one.
+
 | Provider | Live quota endpoint |
 | --- | --- |
 | `openai-codex` | `chatgpt.com/backend-api/wham/usage` (session + weekly windows) |
@@ -91,7 +95,8 @@ ai-usage-tracker/
 ```
 
 Endpoints: `GET /usage?profile=<name>&refresh=0|1`, `GET /profiles`, `GET /health`.
-Responses are cached in-process for 60s per profile; `refresh=1` bypasses.
+`/usage` also returns `timezone` — the profile's IANA zone name, or `""` for the
+machine's own. Responses are cached in-process for 60s per profile; `refresh=1` bypasses.
 
 ## Privacy
 

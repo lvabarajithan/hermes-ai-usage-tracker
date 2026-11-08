@@ -105,21 +105,52 @@ function selectProfile(name) {
 
 // ---------------------------------------------------------------- formatters
 
-function fmtIst(iso) {
-  if (!iso) return null
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString('en-IN', {
-    timeZone: 'Asia/Kolkata',
+// Timestamps render in the profile's Hermes timezone (the backend's `timezone`
+// field), never a hardcoded one. An empty/missing zone means "this machine's own
+// zone", which is what a browser left to its defaults already gives us.
+const _stampFormats = new Map()
+
+function stampFormat(tz) {
+  const key = typeof tz === 'string' ? tz.trim() : ''
+  const cached = _stampFormats.get(key)
+  if (cached) return cached
+  const options = {
     day: '2-digit',
     month: 'short',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: true
-  })
+    hour12: true,
+    timeZoneName: 'short'
+  }
+  let formatter
+  try {
+    formatter = new Intl.DateTimeFormat(undefined, key ? { ...options, timeZone: key } : options)
+  } catch {
+    // A stale or unsupported IANA name must not sink the page — use the local zone.
+    formatter = new Intl.DateTimeFormat(undefined, options)
+  }
+  _stampFormats.set(key, formatter)
+  return formatter
 }
 
-function resetLabel(iso) {
+/** `08 Nov, 02:49 pm AEDT` — the locale's own date/time order plus the zone
+ *  abbreviation, so the label never claims a zone it isn't showing. */
+function fmtWhen(iso, tz) {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const parts = stampFormat(tz).formatToParts(d)
+  const zone = parts.find(part => part.type === 'timeZoneName')?.value || ''
+  const stamp = parts
+    .filter(part => part.type !== 'timeZoneName')
+    .map(part => part.value)
+    .join('')
+    .trim()
+    .replace(/[,\s]+$/, '')
+  return zone ? `${stamp} ${zone}` : stamp
+}
+
+function resetLabel(iso, tz) {
   if (!iso) return null
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return null
@@ -129,7 +160,7 @@ function resetLabel(iso) {
   const hours = Math.floor((seconds % 86_400) / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
   const rel = days ? `in ${days}d ${hours}h` : hours ? `in ${hours}h ${minutes}m` : `in ${minutes}m`
-  return `resets ${rel} · ${fmtIst(iso)} IST`
+  return `resets ${rel} · ${fmtWhen(iso, tz)}`
 }
 
 function pct(value) {
@@ -215,7 +246,7 @@ function useUsage(profile, intervalMs) {
 
 // ---------------------------------------------------------------- components
 
-function QuotaBar({ window }) {
+function QuotaBar({ window, tz }) {
   const remaining = window.remaining_percent
   if (remaining === null || remaining === undefined) {
     return jsxs('div', {
@@ -239,8 +270,8 @@ function QuotaBar({ window }) {
             children: `${pct(remaining)} left`
           }),
           window.detail ? jsx('span', { className: 'text-(--ui-text-quaternary)', children: window.detail }) : null,
-          resetLabel(window.reset_at)
-            ? jsx('span', { className: 'text-(--ui-text-quaternary)', children: resetLabel(window.reset_at) })
+          resetLabel(window.reset_at, tz)
+            ? jsx('span', { className: 'text-(--ui-text-quaternary)', children: resetLabel(window.reset_at, tz) })
             : null,
           tone === 'bad' || tone === 'warn'
             ? jsx(Badge, { variant: tone === 'bad' ? 'destructive' : 'warn', size: 'xs', children: tone === 'bad' ? 'low' : 'watch' })
@@ -259,7 +290,7 @@ function QuotaBar({ window }) {
   })
 }
 
-function ProviderCard({ provider, isHidden }) {
+function ProviderCard({ provider, isHidden, tz }) {
   const status = statusOf(provider)
   const windows = provider.quota?.windows || []
   const details = provider.quota?.details || []
@@ -296,7 +327,7 @@ function ProviderCard({ provider, isHidden }) {
           })
         ]
       }),
-      windows.map((window, index) => jsx(QuotaBar, { window }, index)),
+      windows.map((window, index) => jsx(QuotaBar, { window, tz }, index)),
       !provider.quota?.available && provider.quota?.unavailable_reason
         ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-quaternary)', children: provider.quota.unavailable_reason })
         : null,
@@ -413,6 +444,7 @@ function UsagePage() {
 
   const chipProvider = useValue($chipProvider)
   const profiles = data?.profiles || []
+  const tz = data?.timezone || ''
   const shownProfile = selected || data?.profile || ''
   const header = jsx(PageHeader, {
     profiles,
@@ -426,7 +458,7 @@ function UsagePage() {
     hiddenCount: hiddenIds.length,
     showHidden,
     setShowHidden,
-    meta: data ? `fetched ${fmtIst(data.generated_at)} IST · probed in ${data.probe_seconds}s` : null
+    meta: data ? `fetched ${fmtWhen(data.generated_at, tz)} · probed in ${data.probe_seconds}s` : null
   })
 
   // The header (profile picker + refresh) renders in EVERY state.
@@ -491,9 +523,9 @@ function UsagePage() {
         jsxs('div', {
           className: 'flex flex-col gap-2',
           children: [
-            visible.map((provider, index) => jsx(ProviderCard, { provider }, index)),
+            visible.map((provider, index) => jsx(ProviderCard, { provider, tz }, index)),
             showHidden
-              ? hiddenProviders.map((provider, index) => jsx(ProviderCard, { provider, isHidden: true }, `hidden-${index}`))
+              ? hiddenProviders.map((provider, index) => jsx(ProviderCard, { provider, isHidden: true, tz }, `hidden-${index}`))
               : null,
             visible.length === 0
               ? jsx(EmptyState, {
@@ -528,7 +560,7 @@ function UsageChip() {
   const worst = (pinned ? worstWindowOf(pinned) : null) || worstRemaining(data, hiddenIds)
   const tone = toneFor(worst ? worst.remaining : null)
   const detail = worst
-    ? [worst.provider, worst.window ? `${worst.window} window` : null, resetLabel(worst.reset_at)]
+    ? [worst.provider, worst.window ? `${worst.window} window` : null, resetLabel(worst.reset_at, data?.timezone)]
         .filter(Boolean)
         .join(' · ')
     : 'AI usage'

@@ -652,6 +652,23 @@ def _configured_providers() -> set[str]:
 # --------------------------------------------------------------------------
 
 
+def _timezone_name() -> str:
+    """The active profile's configured IANA timezone, or ``""`` (server-local).
+
+    Hermes already resolves this one way everywhere — ``HERMES_TIMEZONE``, then
+    ``timezone`` in the profile's ``config.yaml``, then server-local — so reuse
+    that resolver rather than teaching the UI a second rule. ``""`` is a real
+    answer: it tells the desktop to fall back to the machine's own zone.
+    """
+    try:
+        from hermes_time import get_timezone_name
+
+        return str(get_timezone_name() or "")
+    except Exception:  # noqa: BLE001 - an unreadable clock must not fail the page
+        log.debug("timezone resolution unavailable", exc_info=True)
+    return os.environ.get("HERMES_TIMEZONE", "").strip()
+
+
 def _build_payload(home: Optional[Path], profile_name: Optional[str]) -> dict[str, Any]:
     started = time.time()
     labels = _provider_labels()
@@ -694,6 +711,8 @@ def _build_payload(home: Optional[Path], profile_name: Optional[str]) -> dict[st
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        # IANA name for the timestamps above; "" = let the desktop use its own zone.
+        "timezone": _run_in_home(home, _timezone_name),
         "profile": profile_name,
         "probe_seconds": round(time.time() - started, 2),
         "profiles": _profile_rows(),
