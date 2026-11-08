@@ -99,3 +99,26 @@ Responses are cached in-process for 60s per profile; `refresh=1` bypasses.
 - Credentials are resolved in-process and **never serialized**; the wire carries
   `configured: true/false` and a source label only.
 - The only outbound calls are the provider quota endpoints above.
+
+## Failed refreshes
+
+If a status-chip refresh fails, a retained percentage is marked **(stale)** and
+its indicator becomes neutral. The tooltip and accessibility label also report
+the failed refresh. If there is no retained numeric quota, the chip says
+**AI usage unavailable** instead of continuing to show a loading label. A later
+successful response clears the warning automatically.
+
+This reports a failed plugin-backend read; it does not independently verify the
+freshness of every upstream provider response.
+
+## Desktop rendering tests
+
+With Node.js 20 or later, run from the repository root (no npm install needed):
+
+```bash
+node --experimental-vm-modules --test desktop/plugin.test.mjs
+```
+
+These tests exercise the registered chip with SDK/React stubs, including failed
+refreshes and recovery. They do not contact providers or prove real-host polling,
+Windows compatibility, or restart persistence.

@@ -518,7 +518,7 @@ function UsageChip() {
   const hiddenIds = useValue($hidden)
   const selected = useValue($profile)
   const pinnedId = useValue($chipProvider)
-  const { data } = useUsage(selected, REFRESH_CHIP_MS)
+  const { data, error } = useUsage(selected, REFRESH_CHIP_MS)
 
   // A pin only wins while it resolves to a visible provider with a numeric
   // window; hidden, absent for this profile, or quota-less falls back to AUTO
@@ -526,12 +526,20 @@ function UsageChip() {
   const visible = (data?.providers || []).filter(provider => !(hiddenIds || []).includes(provider.id))
   const pinned = pinnedId ? visible.find(provider => provider.id === pinnedId) : null
   const worst = (pinned ? worstWindowOf(pinned) : null) || worstRemaining(data, hiddenIds)
-  const tone = toneFor(worst ? worst.remaining : null)
-  const detail = worst
+  // React Query retains the last successful data after a failed refetch. Keep
+  // that value useful, but do not present it as a current quota reading.
+  const tone = toneFor(!error && worst ? worst.remaining : null)
+  const quotaDetail = worst
     ? [worst.provider, worst.window ? `${worst.window} window` : null, resetLabel(worst.reset_at)]
         .filter(Boolean)
         .join(' · ')
     : 'AI usage'
+  const detail = error
+    ? `${quotaDetail} · ${worst ? 'stale' : 'unavailable'} — refresh failed`
+    : quotaDetail
+  const label = worst
+    ? `${pct(worst.remaining)} · ${worst.provider}${error ? ' (stale)' : ''}`
+    : error ? 'AI usage unavailable' : data ? 'AI usage' : 'AI usage…'
 
   return jsx('button', {
     type: 'button',
@@ -557,7 +565,7 @@ function UsageChip() {
                   : 'var(--ui-text-quaternary)'
           }
         }),
-        jsx('span', { children: worst ? `${pct(worst.remaining)} · ${worst.provider}` : data ? 'AI usage' : 'AI usage…' })
+        jsx('span', { children: label })
       ]
     })
   })
